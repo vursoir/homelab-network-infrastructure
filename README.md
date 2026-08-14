@@ -16,24 +16,23 @@ To maintain high availability and rapid disaster recovery capabilities, configur
 
 ```mermaid
 graph TD
-    WAN["ISP / Cox Modem"] -->|2.5GbE Link| FW["Protectli Vault - OPNsense Firewall"]
-    
-    subgraph "Core Security & DNS"
-        FW --> AGH["AdGuard Home - Port 53"]
-        AGH --> UNB["Unbound DNS - DoT Port 853"]
+    WAN["ISP / Cox Modem"] -->|2.5GbE Link| FW["OPNsense Firewall (Protectli)"]
+
+    subgraph "Core Security Engine"
+        FW <--> ZEN["Zenarmor NGFW (Layer 7 Inspection)"]
+        FW <--> AGH["AdGuard Home (Port 53 DNS Filtering)"]
+        AGH --> UNB["Unbound DNS (DoT Port 853)"]
         UNB --> CF["Cloudflare DNS 1.1.1.1"]
-        FW --> ZEN["Zenarmor NGFW Engine"]
     end
 
     FW -->|802.1Q VLAN Trunk| SW["Zyxel Managed Switch"]
 
     SW -->|Trunk - All VLANs| AP1["UniFi AP Upstairs"]
     SW -->|Trunk - All VLANs| AP2["UniFi AP Downstairs"]
-    SW -->|VLAN 20 Access| PC["Gaming PCs & Ethernet Clients"]
 
     AP1 -.->|VLAN 10 SSIDs| W1["Trusted Wireless Clients"]
     AP2 -.->|VLAN 10 SSIDs| W1
-    AP1 -.->|VLAN 20 SSIDs| W2["Wireless Gaming Devices"]
+    AP1 -.->|VLAN 20 SSIDs| W2["Gaming Devices (Wi-Fi)"]
     AP2 -.->|VLAN 20 SSIDs| W2
     AP1 -.->|VLAN 30 SSIDs| W3["Guest Wireless Clients - 20Mbps Limit"]
     AP2 -.->|VLAN 30 SSIDs| W3
@@ -54,7 +53,7 @@ graph TD
 
 * **Network Segmentation (VLANs):**
   * **VLAN 10 - Nexus:** Primary family network for trusted internal devices
-  * **VLAN 20 - Nexus Gaming:** Dedicated isolated segment for gaming devices to prevent congestion on the main network
+  * **VLAN 20 - Nexus Gaming:** Dedicated isolated wireless segment reserved specifically for gaming traffic to prevent congestion on the main network
   * **VLAN 30 - Nexus Guest:** Isolated guest environment, strictly rate-limited (capped at 20 Mbps) to prevent local malware propagation and bandwidth abuse
 * **Network Security & DNS Services:**
   * **AdGuard Home:** Integrated directly into OPNsense for network-wide DNS ad-blocking, tracking protection, and custom query filtering
