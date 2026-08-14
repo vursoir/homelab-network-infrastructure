@@ -12,6 +12,32 @@ To maintain high availability and rapid disaster recovery capabilities, configur
 
 > **Note on Security:** To follow security best practices, raw `config.xml` files containing sensitive environmental data, encrypted credentials, network topologies, and VPN keys are maintained in a private, restricted-access repository. This public documentation outlines the workflow and architecture.
 
+### Network Topology
+
+```mermaid
+graph TD
+    WAN["ISP / Cox Modem"] -->|2.5GbE Link| FW["Protectli Vault - OPNsense Firewall"]
+    
+    subgraph "Core Security & DNS"
+        FW --> AGH["AdGuard Home - Port 53"]
+        AGH --> UNB["Unbound DNS - DoT Port 853"]
+        UNB --> CF["Cloudflare DNS 1.1.1.1"]
+        FW --> ZEN["Zenarmor NGFW Engine"]
+    end
+
+    FW -->|802.1Q VLAN Trunk| SW["Zyxel Managed Switch"]
+
+    SW -->|Trunk - All VLANs| AP1["UniFi AP Upstairs"]
+    SW -->|Trunk - All VLANs| AP2["UniFi AP Downstairs"]
+    SW -->|VLAN 20 Access| PC["Gaming PCs & Ethernet Clients"]
+
+    AP1 -.->|VLAN 10 SSIDs| W1["Trusted Wireless Clients"]
+    AP2 -.->|VLAN 10 SSIDs| W1
+    AP1 -.->|VLAN 20 SSIDs| W2["Wireless Gaming Devices"]
+    AP2 -.->|VLAN 20 SSIDs| W2
+    AP1 -.->|VLAN 30 SSIDs| W3["Guest Wireless Clients - 20Mbps Limit"]
+    AP2 -.->|VLAN 30 SSIDs| W3
+   ``` 
 ---
 
 ## Hardware & Physical Layer Setup
