@@ -1,102 +1,136 @@
-# Automated OPNsense Configuration & Network Management
+# Homelab Network Infrastructure
 
-A secure, automated configuration backup and network state tracking system for a multi-VLAN enterprise/homelab network powered by OPNsense and Git.
+A segmented home network built to small-business standards: an OPNsense firewall on dedicated hardware, VLANs carried over 802.1Q trunks to a managed switch and two access points, Layer-7 inspection, encrypted DNS, and every firewall change version-controlled in Git.
+
+> **Security note:** raw `config.xml` backups contain credentials, keys and network details, so they live in a **private** repository. This public repository documents the design and the workflow.
 
 ---
 
-## Project Overview
-
-This repository documents the physical hardware setup, network architecture, and automated backup pipeline for my OPNsense firewall and core routing environment. 
-
-To maintain high availability and rapid disaster recovery capabilities, configuration changes (including firewall rules, routing parameters, and Zenarmor policies) are tracked using version control. 
-
-> **Note on Security:** To follow security best practices, raw `config.xml` files containing sensitive environmental data, encrypted credentials, network topologies, and VPN keys are maintained in a private, restricted-access repository. This public documentation outlines the workflow and architecture.
-
-### Network Topology
+## Network topology
 
 ```mermaid
 graph TD
-    WAN["ISP / Cox Modem"] -->|2.5GbE Link| FW["OPNsense Firewall (Protectli)"]
+    WAN["ISP modem (bridge mode)"] -->|2.5GbE| FW["OPNsense firewall (Protectli Vault)"]
 
-    subgraph "Core Security Engine"
-        FW <--> ZEN["Zenarmor NGFW (Layer 7 Inspection)"]
-        FW <--> AGH["AdGuard Home (Port 53 DNS Filtering)"]
-        AGH --> UNB["Unbound DNS (DoT Port 853)"]
-        UNB --> CF["Cloudflare DNS 1.1.1.1"]
+    subgraph "Security services on the firewall"
+        FW <--> ZEN["Zenarmor NGFW (Layer-7 inspection)"]
+        FW <--> AGH["AdGuard Home (DNS filtering)"]
+        AGH --> UNB["Unbound (recursive resolver)"]
+        UNB -->|DNS-over-TLS, port 853| CF["Cloudflare 1.1.1.1"]
     end
 
-    FW -->|802.1Q VLAN Trunk| SW["Zyxel Managed Switch"]
+    UPS["UPS + home generator"] -.->|power| WAN
+    UPS -.->|power| FW
 
-    SW -->|Trunk - All VLANs| AP1["UniFi AP Upstairs"]
-    SW -->|Trunk - All VLANs| AP2["UniFi AP Downstairs"]
+    FW -->|802.1Q trunk| SW["Zyxel managed switch"]
+    SW -->|Separate wired network| PC["2 wired PCs"]
+    SW -->|Trunk, all VLANs| AP1["UniFi AP (upstairs)"]
+    SW -->|Trunk, all VLANs| AP2["UniFi AP (downstairs)"]
 
-    AP1 -.->|VLAN 10 SSIDs| W1["Trusted Wireless Clients"]
-    AP2 -.->|VLAN 10 SSIDs| W1
-    AP1 -.->|VLAN 20 SSIDs| W2["Gaming Devices (Wi-Fi)"]
-    AP2 -.->|VLAN 20 SSIDs| W2
-    AP1 -.->|VLAN 30 SSIDs| W3["Guest Wireless Clients - 20Mbps Limit"]
-    AP2 -.->|VLAN 30 SSIDs| W3
-   ``` 
----
-
-## Hardware & Physical Layer Setup
-
-* **Firewall Appliance:** Protectli Vault Mini PC (upgraded with 8GB RAM) running OPNsense
-* **WAN Hand-off:** Cox Modem configured in Bridge Mode, utilizing 2.5GbE high-speed interfaces
-* **Core Switching:** Zyxel Managed Switch handling VLAN tagging, trunking, and inter-VLAN routing controls
-* **Wireless Access Points:** 2x Ubiquiti UniFi Access Points (Upstairs and Downstairs) powered via inline PoE injectors
-* **Physical Infrastructure:** Custom-built Cat6 Ethernet runs (stripped, untwisted, standard RJ45 crimping, and ceiling-mounted)
+    AP1 -.-> W1["VLAN 10: trusted clients"]
+    AP2 -.-> W1
+    AP1 -.-> W2["VLAN 20: gaming devices"]
+    AP2 -.-> W2
+    AP1 -.-> W3["VLAN 30: guests (20 Mbps cap)"]
+    AP2 -.-> W3
+```
 
 ---
 
-## Technical Stack & Services
+## VLANs
 
-* **Network Segmentation (VLANs):**
-  * **VLAN 10 - Nexus:** Primary family network for trusted internal devices
-  * **VLAN 20 - Nexus Gaming:** Dedicated isolated wireless segment reserved specifically for gaming traffic to prevent congestion on the main network
-  * **VLAN 30 - Nexus Guest:** Isolated guest environment, strictly rate-limited (capped at 20 Mbps) to prevent local malware propagation and bandwidth abuse
-* **Network Security & DNS Services:**
-  * **AdGuard Home:** Integrated directly into OPNsense for network-wide DNS ad-blocking, tracking protection, and custom query filtering
-  * **Unbound DNS:** Configured as an upstream recursive resolver paired with Cloudflare DNS over TLS (DoT on port 853) for encrypted, private DNS queries
-  * **Geo-Blocking:** GeoIP alias rules dropping inbound/outbound connections from known high-risk threat actor regions
-  * **Zenarmor (NGFW):** Layer-7 deep packet inspection and web content filtering
-  * **DHCP Server:** Automated IP pool assignment per isolated interface
-* **Automated Version Control:** Scheduled background execution pushing state changes to a secure remote Git repository
+| VLAN | Name | Subnet | DHCP range | Purpose |
+|---|---|---|---|---|
+| 1 (untagged) | LAN | 192.168.1.0/24 | .41 to .245 | The two wired PCs and network management |
+| 10 | Nexus | 192.168.10.0/24 | .10 to .200 | Trusted household devices |
+| 20 | Nexus Gaming | 192.168.20.0/24 | .10 to .200 | Consoles and gaming devices on their own segment |
+| 30 | Nexus Guest | 192.168.30.0/24 | .10 to .200 | Guest devices, capped at 20 Mbps |
 
----
+The two wired PCs sit on the wired LAN, apart from the Nexus Wi-Fi VLANs, so they never compete with the family's wireless connections.
 
-## Automated Backup Architecture
+Each VLAN has its own interface, Dnsmasq DHCP scope (with hostnames registered under `.internal`) and firewall rules on OPNsense. The switch and access points only tag and carry the traffic; all routing and filtering between VLANs happens on the firewall.
 
-The configuration tracking pipeline operates via the OPNsense internal API / Os-git-backup plugin / custom automated script:
+### What can talk to what
 
-[ OPNsense Firewall ] 
-        │
-        ├── 1. Admin/Policy Changes Made
-        ├── 2. Nightly Cron Job / API Triggered
-        ├── 3. Encrypted config.xml Parsed & Committed
-        │
-        ▼
-[ Private Git Repository ] ---> Automated Version History & Audit Trail
+| From \ To | Trusted (10) | Gaming (20) | Guest (30) | Internet |
+|---|---|---|---|---|
+| **Trusted (10)** | Yes | Yes | Yes | Yes |
+| **Gaming (20)** | No | Yes | No | Yes |
+| **Guest (30)** | No | No | No (client isolation) | Yes, 20 Mbps |
 
-### Automation Workflow
-1. **Trigger:** Changes to firewall rules or Zenarmor policies trigger a configuration revision check.
-2. **Sanitization (Optional):** Pre-commit hooks run scripts to strip dynamic session state data while preserving key configuration trees.
-3. **Commit & Push:** State changes are automatically committed with a timestamped message and pushed to a secure off-site repository over SSH.
+Nexus is the trusted network, so its devices can reach the others (for example to manage a console or help a guest). Gaming and Guest can only reach the internet: their rules allow DNS to their own gateway, block the firewall's admin pages and every private network, then allow everything else. Traffic only ever starts from the trusted side, so a compromised console, phone or laptop on Gaming or Guest cannot reach anything inside. That isolation is what contains malware; the 20 Mbps cap on guests protects bandwidth.
 
 ---
 
-## Security Best Practices Implemented
+## Hardware
 
-* **Secrets Management:** Sensitive tokens, local password hashes, and WireGuard/OpenVPN private keys are excluded from public repositories.
-* **Access Control:** SSH keys used for Git synchronization use restricted deployment permissions.
-* **Least Privilege Routing:** Admin interfaces and API endpoints are strictly restricted to a secure, isolated Management VLAN; Web GUI access (ports 80/443) is blocked across untrusted subnets.
+- **Firewall:** Protectli Vault mini PC (8 GB RAM) running OPNsense
+- **WAN:** ISP modem in bridge mode over 2.5GbE, so OPNsense holds the public IP
+- **Switching:** Zyxel XGS1210-12 managed switch with a 2.5GbE trunk uplink to the firewall (VLANs 10, 20 and 30 tagged), 1GbE trunk ports to each access point, and access ports for the wired PCs; zero CRC errors and loop detection on every port
+- **Wireless:** 2 Ubiquiti UniFi access points on PoE injectors, one SSID per VLAN (Nexus, Nexus Gaming, Nexus Guest)
+- **Power resilience:** the modem and firewall run on a UPS, and the house has a backup generator. The UPS carries them through the few seconds it takes the generator to start and switch over, so the internet stays up through a power outage with no downtime.
+- **Cabling:** Cat6 runs I terminated and crimped myself (RJ45), ceiling-mounted
 
 ---
 
-## Disaster Recovery & Restoration
+## Security services
 
-In the event of hardware failure or catastrophic configuration loss:
-1. Provision a fresh OPNsense baseline image on the Protectli hardware.
-2. Pull the latest known-good snapshot from the backup repository.
-3. Import `config.xml` via the OPNsense web console or CLI recovery prompt.
-4. Reboot the system to fully restore interfaces, 2.5GbE links, VLAN tags, firewall rulesets, AdGuard Home configurations, and Zenarmor policies.
+- **Zenarmor (NGFW, IDS/IPS):** Layer-7 deep packet inspection, application control and web filtering, plus intrusion detection and prevention that blocks malware, phishing and botnet traffic as it happens, with per-policy exclusions
+- **AdGuard Home:** network-wide DNS filtering for ads, trackers, telemetry and malicious domains, forwarding to Unbound on the firewall (port 5353)
+- **Unbound:** recursive resolver forwarding upstream over **DNS-over-TLS (port 853)** to Cloudflare, so DNS leaves the network encrypted
+
+**In a typical 24 hours:** about **196,000 DNS queries**, of which about **47,000 (24%) are blocked** (mostly ad, tracking and telemetry domains), with an average processing time of **30 ms**. On a typical day Zenarmor detects around **745 potentially harmful connections and blocks 742**, checking traffic against its cloud threat intelligence (about 1.95 million lookups so far, 44 ms round trip).
+- **GeoIP blocking:** alias-based rules dropping traffic to and from high-risk regions
+- **DHCP:** a separate address pool per VLAN
+
+---
+
+## Configuration backups in Git
+
+Every change to the firewall is backed up automatically with OPNsense's **os-git-backup** plugin.
+
+```text
+[ Change made in OPNsense (GUI or API) ]
+                  |
+                  v
+[ os-git-backup commits config.xml ]
+   message: the API path that changed + timestamp + who made it
+                  |
+                  v
+[ Private GitHub repository over SSH ]
+   full history, line-by-line diffs, one-click rollback
+```
+
+- **Every change is a commit.** The commit message records what changed (for example `/api/zenarmor/policy/exclusions made changes`), when, and from which admin session, so the history doubles as an audit log.
+- **Diffs show exactly what changed** between any two points in time, which makes a bad change easy to find and undo.
+- **The repository is private.** The firewall pushes with a GitHub deploy key that can write to that one repository only, and the key is replaced with a new one every 60 days.
+
+---
+
+## Disaster recovery
+
+1. Install a fresh OPNsense image on the Protectli.
+2. Download the last known-good `config.xml` from the private backup repository.
+3. Restore it under **System > Configuration > Backups** (or from the console).
+4. Reboot. Interfaces, VLANs, firewall rules, DHCP, AdGuard Home, Unbound and Zenarmor policies all come back from the one file.
+
+---
+
+## What I learned
+
+- Designing VLAN segmentation around trust levels, and enforcing it with firewall rules instead of relying on the VLAN alone
+- Configuring 802.1Q trunks consistently across a firewall, a managed switch and access points
+- Running encrypted DNS end to end, and layering DNS filtering with Layer-7 inspection
+- Planning for power failures: a UPS bridging the gap until the generator takes over, so the network never drops
+- Treating network configuration like code: version control, diffs, audit trail and repeatable restores
+
+---
+
+## Screenshots
+
+| | |
+|---|---|
+| **OPNsense dashboard** (public addresses blurred) ![OPNsense dashboard](screenshots/opnsense-dashboard.png) | **Firewall rules per VLAN** ![Firewall rules](screenshots/opnsense-firewall-rules.png) |
+| **802.1Q VLAN membership on the switch** ![Switch VLANs](screenshots/zyxel-vlans.png) | **Switch port status** (MAC blurred) ![Switch ports](screenshots/zyxel-switch.png) |
+| **DHCP ranges per VLAN** ![DHCP ranges](screenshots/dhcp-ranges.png) | **Dnsmasq DNS and DHCP settings** ![Dnsmasq](screenshots/dnsmasq-general.png) |
+| **AdGuard Home, last 24 hours** ![AdGuard Home](screenshots/adguard-home.png) | **Zenarmor threat dashboard** ![Zenarmor](screenshots/zenarmor-dashboard.png) |
